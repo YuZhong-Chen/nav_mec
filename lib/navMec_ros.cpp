@@ -1,12 +1,12 @@
+#include "navMec_ros.h"
+
 #include <cmath>
 #include <iostream>
-
-#include "navMec_ros.h"
 
 // --- Implement callback functions ---
 /* Server Callback function */
 bool serverCB(nav_mec::navMec_srv::Request& req, nav_mec::navMec_srv::Response& res){
-    if(req.next.size() > 0){
+    if(req.next.size() >= 0){
         trigger = true;
         res.get_request = true;
 
@@ -38,6 +38,10 @@ void subCB(const localization::Locate::ConstPtr msg){
 
     geometry_msgs::Twist cmd_vel;
 
+    cmd_vel.linear.x = 0;
+    cmd_vel.linear.y = 0;
+    cmd_vel.angular.z = 0;
+
     if(!debug_mode /* DEBUGMODE */ && !trigger){
         // Haven't trigger the navigation
         // Don't move the chases ---> give 0 speed ---> return
@@ -45,8 +49,8 @@ void subCB(const localization::Locate::ConstPtr msg){
         return;
     }
 
-    static double time_before = 0;
-    static double time_after = 0;
+    static double time_before = 0.;
+    static double time_after = 0.;
     if(!time_before){
         time_before = ros::Time::now().toSec();
         navMec_pub.publish(cmd_vel);
@@ -56,18 +60,16 @@ void subCB(const localization::Locate::ConstPtr msg){
     /* Get time different (Here just for calculate proper delta velocity) */
     time_after = ros::Time::now().toSec();
     double time_diff = time_after - time_before;
-    time_before = ros::Time::now().toSec();
+    time_before = time_after;
 
     /* Change geometry msgs to Vector3 */
     Vector3 location(msg->PositionX, msg->PositionY, msg->PositionOmega);
     Vector3 velocity(msg->VelocityX, msg->VelocityY, msg->VelocityOmega);
 
-
-
     switch(pointControl.getMode()){
         case 't':
         case 'b': {
-                /* Check get goal and renew Error information */
+            /* Check get goal and renew Error information */
                 pointControl.check_get_goal(location);
 
                 /* For calculate proper goal or move to next goal */
@@ -83,26 +85,27 @@ void subCB(const localization::Locate::ConstPtr msg){
                     count++;
                     navMec_pub.publish(cmd_vel);
                 }
-                else navMec_pub.publish(cmd_vel);
-
+                else
+                    navMec_pub.publish(cmd_vel);
 
                 /* If we got the goal --> send success info */
                 if(!debug_mode /* DEBUGMODE */ && pointControl.getGoal /* if we get the goal */){
                     trigger = false;
                     nav_mec::navMec_fsrv res_srv;
                     res_srv.request.finished = true;
-                    navMec_cli.call(res_srv);
+                    while(!navMec_cli.call(res_srv))
+                        ;
                     // Ignore the response
-                    time_before = time_after = 0;
-
+                    time_before = time_after = 0.;
                 }
             } break;
-        case 'c': {
+        case 'c':
+        case 'i': {
                 timeoutReload -= time_diff;
 
                 cmd_vel.linear.x = 0.;
-                cmd_vel.linear.y = -calibMode_linear_y;
-                cmd_vel.angular.z = 0;
+                cmd_vel.linear.y = pointControl.getMode() == 'c' ? -calibMode_linear_y : calibMode_linear_y;
+                cmd_vel.angular.z = 0.;
 
                 navMec_pub.publish(cmd_vel);
 
@@ -114,24 +117,30 @@ void subCB(const localization::Locate::ConstPtr msg){
                         trigger = false;
                         nav_mec::navMec_fsrv res_srv;
                         res_srv.request.finished = true;
-                        navMec_cli.call(res_srv);
-                        time_before = time_after = 0;
+                        while(!navMec_cli.call(res_srv))
+                            ;
+                        time_before = time_after = 0.;
                     }
-
                 }
             } break;
-        default: break;
+        default:
+            break;
     }
+
+    ROS_INFO_STREAM("Current velocity : (" << cmd_vel.linear.x << ", " << cmd_vel.linear.y << ", " << cmd_vel.angular.z << ")");
 
     // ROS_DEBUG_STREAM("Current mode : " << pointControl.getMode());
 }
 
 void subCBPP(const localization::Locate::ConstPtr msg){
     geometry_msgs::Twist cmd_vel;
-    static double time_before = 0;
-    static double time_after = 0;
+    static double time_before = 0.;
+    static double time_after = 0.;
     if(!time_before){
         time_before = ros::Time::now().toSec();
+        cmd_vel.linear.x = 0.;
+        cmd_vel.linear.y = 0.;
+        cmd_vel.angular.z = 0.;
         navMec_pub.publish(cmd_vel);
         return;
     }
@@ -149,7 +158,6 @@ void subCBPP(const localization::Locate::ConstPtr msg){
 
     navMec_pub.publish(cmd_vel);
 }
-
 
 // --- Need to be removed --- S
 void constructVectors(){

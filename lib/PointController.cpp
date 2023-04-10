@@ -76,6 +76,15 @@ void PointController::modeSettings(std::queue<char> mode){
 }
 
 char PointController::getMode(){
+    if(this->ModeBuffer.front() == 't'){
+        this->CarAccel = this->CarAccel_turboMode;
+        this->CarSpeed_MAX = this->CarAccel_turboMode;
+    }
+    else{
+        this->CarAccel = this->CarAccel_basicMode;
+        this->CarSpeed_MAX = this->CarAccel_basicMode;
+    }
+
     return this->ModeBuffer.front();
 }
 
@@ -109,13 +118,16 @@ void PointController::check_get_goal(Vector3 location_vector){
 
     if(abs(this->ErrorVector) >= this->CarErrorLinear)
         this->getGoal = false;
-    else if(abs(this->ErrorVector.theta) >= this->CarErrorAngular)
+    else if(fabs(this->ErrorVector.theta) >= this->CarErrorAngular)
         this->getGoal = false;
     else{
-        ROS_DEBUG_STREAM("CURRENT_GOAL : " << this->GoalPosition.x << ", " << this->GoalPosition.y << ", " << this->GoalPosition.theta);
+        // ROS_DEBUG_STREAM("CURRENT_GOAL : " << this->GoalPosition.x << ", " << this->GoalPosition.y << ", " << this->GoalPosition.theta);
         this->GoalBuffer.pop();
         this->ModeBuffer.pop();
-        if(this->GoalBuffer.empty()) this->getGoal = true;
+        if(this->GoalBuffer.empty()){
+            ROS_DEBUG_STREAM("CURRENT_GOAL : " << this->GoalPosition.x << ", " << this->GoalPosition.y << ", " << this->GoalPosition.theta);
+            this->getGoal = true;
+        }
         else{
             while(this->GoalBuffer.front().theta > PI)
                 this->GoalBuffer.front().theta = this->GoalBuffer.front().theta - 2 * PI;
@@ -132,6 +144,7 @@ void PointController::check_get_goal(Vector3 location_vector){
 geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3 velocity_vector, double time_diff){
 
     geometry_msgs::Twist cmd_vel;
+    ROS_INFO_STREAM("CURRENT STATE : " << this->CarState_linear);
 
     // Calculate the offset
     this->offset.x = this->offset_const_xa * location_vector.x + this->offset_const_xb;
@@ -148,8 +161,10 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
     if(abs(this->ErrorVector) == 0){
         Gcos = Gsin = 0;
     }
-    Gcos = this->ErrorVector.x / abs(this->ErrorVector);
-    Gsin = this->ErrorVector.y / abs(this->ErrorVector);
+    else{
+        Gcos = this->ErrorVector.x / abs(this->ErrorVector);
+        Gsin = this->ErrorVector.y / abs(this->ErrorVector);
+    }
 
     double prev_vel = abs(velocity_vector);
     switch(this->CarState_linear){
@@ -176,7 +191,7 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
         this->CarLinear_vel = this->CarSpeed_MAX;
 
     // Get absolute angular velocity
-    double prev_omega = abs(velocity_vector.theta);
+    double prev_omega = fabs(velocity_vector.theta);
     switch(this->CarState_angular){
         case ACCEL:
             this->CarAngular_vel = prev_omega + (this->CarAlpha * time_diff);
@@ -185,7 +200,7 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
             this->CarAngular_vel = prev_omega - (this->CarAlpha * time_diff);
             break;
         case PCONTROL:
-            this->CarAngular_vel = abs(this->ErrorVector.theta) * this->P_gain;
+            this->CarAngular_vel = fabs(this->ErrorVector.theta) * 30;
             if(this->CarAngular_vel > prev_omega)
                 this->CarAngular_vel = prev_omega;
             break;
@@ -200,18 +215,11 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
     if(this->CarAngular_vel > this->CarOmega_MAX)
         this->CarAngular_vel = this->CarOmega_MAX;
 
-    if(abs(this->ErrorVector.theta) < PI){
-        if(this->ErrorVector.theta > 0)
-            this->orientation_dir = CW;
-        else
-            this->orientation_dir = CCW;
-    }
-    else{
-        if(this->ErrorVector.theta < 0)
-            this->orientation_dir = CW;
-        else
-            this->orientation_dir = CCW;
-    }
+    if(this->ErrorVector.theta >= 0)
+        this->orientation_dir = CW;
+    else
+        this->orientation_dir = CCW;
+
 
     cmd_vel.linear.x = this->CarLinear_vel * Gcos;
     cmd_vel.linear.y = this->CarLinear_vel * Gsin;
@@ -222,6 +230,9 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
     //                                                       abs(this->ErrorVector.theta));
     // ROS_INFO("State : %d, prev : %lf, Car ang : %lf\n", this->CarState_angular, prev_omega, this->CarAngular_vel);
     // ROS_INFO("State : %d\n", this->CarState_linear);
+    // ROS_INFO_STREAM("ERROR THETA : " << this->ErrorVector.theta << ", DIR : " << this->orientation_dir);
+    // ROS_INFO_STREAM("CAR_ANG_VEL : " << this->CarAngular_vel);
+    // ROS_INFO_STREAM("PREVIOUS omega : " << prev_omega);
 
     return cmd_vel;
 }
@@ -230,7 +241,7 @@ geometry_msgs::Twist PointController::get_vgoal(Vector3 location_vector, Vector3
 void PointController::get_current_state(Vector3 location){
 
     double linear_error = abs(this->ErrorVector);
-    double angular_error = abs(this->ErrorVector.theta);
+    double angular_error = fabs(this->ErrorVector.theta);
 
     // We need to calculate the breakpoint and pcontrol point
     this->get_breakPoint(location);
@@ -248,13 +259,15 @@ void PointController::get_current_state(Vector3 location){
                 break;
             case ACCEL:
                 // From the ACCEL state to SLOWDOWN state when the error is smaller than the breakpoint
-                if(linear_error < this->breakpoint_linear * this->BP_LINEAR_CONST)
+                if(linear_error < this->breakpoint_linear * this->BP_LINEAR_CONST && abs(this->CarLinear_vel) >= 0.23)
                     this->CarState_linear = SLOWDOWN;
                 break;
             case SLOWDOWN:
                 // From the SLOWDOWN state to the PCONTROL state
-                if(abs(this->p_control_point - linear_error * this->P_gain) < this->CarAccel * this->PCONTROL_CONST)
+                if(fabs(this->p_control_point - linear_error * this->P_gain) < this->CarAccel * this->PCONTROL_CONST)
                     this->CarState_linear = PCONTROL;
+
+                if(this->CarLinear_vel <= 0) this->CarState_linear = ACCEL;
 
                 if(this->GoalChanged) this->CarState_linear = STOP;
                 break;
@@ -276,12 +289,12 @@ void PointController::get_current_state(Vector3 location){
                 break;
             case ACCEL:
                 // From the ACCEL state to SLOWDOWN state when the error is smaller than the breakpoint
-                if(angular_error < this->breakpoint_angular * this->BP_ANGULAR_CONST)
+                if(angular_error < this->breakpoint_angular * this->BP_ANGULAR_CONST && abs(this->CarAngular_vel) >= 0.33)
                     this->CarState_angular = SLOWDOWN;
                 break;
             case SLOWDOWN:
                 // From the SLOWDOWN state to the PCONTROL state
-                if(abs(this->p_angular - abs(this->ErrorVector.theta) * this->P_gain) < this->CarAlpha * this->PCONTROL_CONST)
+                if(fabs(this->p_angular - fabs(this->ErrorVector.theta) * this->P_gain) < this->CarAlpha * this->PCONTROL_CONST)
                     this->CarState_angular = PCONTROL;
                 if(this->GoalChanged) this->CarState_angular = STOP;
                 break;
@@ -304,9 +317,9 @@ void PointController::get_breakPoint(Vector3 location){
 
 void PointController::get_pcontrol_point(Vector3 location){
 
-    this->p_control_point = abs(this->CarLinear_vel) * this->P_gain;
+    this->p_control_point = fabs(this->CarLinear_vel) * this->P_gain;
 
-    this->p_angular = abs(this->CarAngular_vel) * this->P_gain;
+    this->p_angular = fabs(this->CarAngular_vel) * this->P_gain;
 }
 
 void PointController::get_error_vector(Vector3 location){
@@ -320,8 +333,8 @@ void PointController::get_error_vector(Vector3 location){
     double costheta = std::cos(-location.theta);
 
     // Bound the region of error vector
-    if(error_vector.theta > PI) error_vector.theta -= 2 * PI;
-    else if(error_vector.theta < -PI) error_vector.theta += 2 * PI;
+    if(error_vector.theta >= PI) error_vector.theta -= 2 * PI;
+    else if(error_vector.theta <= -PI) error_vector.theta += 2 * PI;
 
     this->ErrorVector = Vector3(error_vector.x * costheta - error_vector.y * sintheta,
                                 error_vector.x * sintheta + error_vector.y * costheta,
